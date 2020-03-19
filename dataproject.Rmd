@@ -1,0 +1,458 @@
+---
+title: "Audit Market and Restatements Project"
+output: html_notebook
+author: Group 6
+---
+
+# Import data, libraries, and Clean
+
+# --------------------------------------------------------------------------
+
+### Note:  The use of "df" and "dataframe" are used throughout the analysis.  They mean the exact same thing.  
+
+### Import libraries
+```{r, message=FALSE}
+library(tidyverse)
+```
+
+### Load data
+```{r, message=FALSE}
+df <- read_csv('projectData.csv')
+head(df)
+```
+
+### Clean names
+
+Should already be mostly good to go, but let's double check.
+```{r}
+library(janitor)
+df <- df %>% clean_names()
+head(df)
+```
+
+### Change all N/As in the dataset to 0.  The initial analysis was conducted without doing this, and it skewed binary percentages later on by 2-5 percent.  Noteworthy that na.rm = TRUE in the aggregate code blocks combined with cbind do absolutely nothing...  That was a painful lesson.  Ignore the soft deprecated message.  It works just fine.
+
+#### You could definitely use an average here instead of filling N/A values with 0.... But without knowing more of the dataset, it's hard to say.  Are most of the N/A values from non Big 4 clients?  If so, using an average to replace N/A values would likely grossly OVERSTATE their fees.  Filling with 0 will understate the fees, but it's the safer play here since I think averaging will cause a greater disparity from the actual numbers that we don't know. 
+```{r}
+df <- df %>%
+  mutate_all(funs(ifelse(is.na(.), 0, .)))
+```
+
+
+### Setup a Giant IF statement to separate B4 from non-b4
+
+#### Note:  This variable is the EXACT same as the variable already given in the original dataset, bign_aa.  This was not noticed until the end of the analysis.  
+```{r}
+df <- df %>% mutate(Big4 = case_when(str_detect(auditor_name, "KPMG") | str_detect(auditor_name, "Ernst") | 
+                           str_detect(auditor_name, "Deloitte") | str_detect(auditor_name, "waterhouse") ~ 1, TRUE ~ 0) 
+                        )
+
+
+#this is essentially an if else statement...  We're saying for anything that looks like a Big4 firm, give it 1.  THEN, anything else that's left in the dataset (this is what the true comes from and means), we're going to give it a 0 because this will be all the other non-big 4 firms.  This was also probably a lot more of a complicated way to go about things, but it works.
+
+# To elaborate more, TRUE means that anything that IS NOT Big 4.  If we put FALSE, this wouldn't do anything to the remainder of the variables, but we want them to have a 0.
+```
+
+
+### Create Big 4 dataframe based on new column made in last step.. 1= Big 4, 0 = not Big 4, so filter new dataframes based on that.
+```{r}
+big4 <- df %>% filter(Big4 == 1)
+```
+
+
+### Non Big-4 dataframe
+```{r}
+other <- df %>% filter(Big4 == 0)
+```
+
+
+# Cleaning step is done.  Proceed to analysis:
+# -----------------------------------------------------------------------------------------------------------------
+
+
+# Part 1:
+
+# 1
+
+### Descriptive stats for total audit fees.
+```{r}
+big4 %>% summarize(Big4_fees = sum(as.numeric(audit_fees), na.rm = TRUE), count = n(), median_fees = median(as.numeric(audit_fees), na.rm=TRUE))
+
+other %>% summarize(nonB4_fees = sum(as.numeric(audit_fees), na.rm = TRUE), count = n(), median_fees = median(as.numeric(audit_fees), na.rm=TRUE))
+```
+
+
+### Market share computation
+
+#### Two ways to do this will be to base it on who the clients hire to begin with (# of clients)... In this case the observations in our Big 4 dataframe versus the observations in our other dataframe...  The other will divide Big4 fees (or non b4 fees) by all total fees.  
+
+
+#### First let's look at the overall numbers, so let's not split up by year just yet.
+
+#### Non B4 market share first.. As evident, the TOTAL market share for non big 4 firms is around 5.5% based on total fees.  
+```{r}
+# Market share by fees..  first non big 4 market share
+
+(sum(other$audit_fees, na.rm = TRUE)) / ((sum(other$audit_fees, na.rm = TRUE)) + sum(big4$audit_fees, na.rm = TRUE)) * 100
+```
+
+#### Big 4 market share.  We could have just done 1 - non big 4 market share, but this computation gives us the same result of 94.5% for TOTAL market share.
+
+```{r}
+(sum(big4$audit_fees, na.rm = TRUE)) / ((sum(other$audit_fees, na.rm = TRUE)) + sum(big4$audit_fees, na.rm = TRUE)) * 100
+```
+
+
+### Now separate the market shares by year.
+
+#### First, separate the fee totals by year and by type of firm.  We'll also add in a few binary variable summations that we will need for later problems.
+```{r}
+fees <- aggregate(cbind(audit_fees, going_concern, misstatement, busseg, pi, oancf, matweak_original_am) ~ calendar_year, big4, sum, na.rm = TRUE)
+fees
+```
+
+
+#### Non big 4 fees by year
+```{r}
+otherFees <- aggregate(cbind(audit_fees, going_concern, misstatement, busseg, pi, oancf, matweak_original_am) ~ calendar_year, other, sum, na.rm = TRUE)
+otherFees$otherFees <- otherFees$audit_fees
+```
+
+#### Add in non b4 fees to other aggregate dataframe
+```{r}
+fees$otherFees <- otherFees$otherFees
+```
+
+#### Compute market share for Big 4 firms and non big 4 firms, separated by year.  If you can't find the market share calculation, make sure to press the button in the top right to move to the other variables.
+```{r}
+fees <- fees %>% mutate(Big4MarketShare = audit_fees / (audit_fees + otherFees) * 100)
+fees <- fees %>% mutate(NonB4MarketShare = (1 - ((Big4MarketShare)/100)) * 100
+                        )
+fees
+```
+#### Big 4 market share hovers in the high 90s based on fees
+
+# Compute market share by percentage of clients
+
+#### Since we're doing a count (length in the code), it doesn't really matter what column we use.  tic chosen at random, but you could choose any of them and get the same result since we're only looking at a count (length) here
+```{r}
+clients <- aggregate(tic ~ calendar_year, big4, length)
+```
+
+### Rename tic column
+```{r}
+clients <- rename(clients, 'B4Clients' = tic)
+```
+
+### Non b4 clients
+```{r}
+otherClients <- aggregate(tic ~ calendar_year, other, length) # laymans terms is saying we're going to use the tic column, split it up by year in our "other" dataframe, and use the length (count) of tic.  
+```
+
+### Append to main clients df
+```{r}
+clients$OtherClients = otherClients$tic
+```
+
+
+### Computation of market share based on count
+
+```{r}
+clients <- clients %>% mutate(Big4MarketShare = B4Clients / (B4Clients + OtherClients) * 100)
+clients <- clients %>% mutate(NonB4MarketShare = (1 - (Big4MarketShare / 100)) * 100 )
+clients
+```
+
+#### Huge difference in market shares depending on what measure is used.  Basing market share on fees leads to a huge majority for the big 4, but just comparing how many clients they each have shows a disparity that isn't that far apart.  For example, fees-based market share = nearly 97% in 2003 for B4, but a client # based market share = 72% for the Big 4 in 2003... A 25% difference.
+
+
+
+# 2
+
+### Client characteristics
+
+We did some work for this already in our fees dfs, where we have the sum of misstatements, business segments, pretax income, and the going_concern variables.  By adding up a binary variable (which going_concern and misstatement are), we are getting the total amount of times that this has occurred.  If we add in the count of amount of clients from the client dfs, we can calculate percentages too.  The pre-tax income and business segements can be added up to also give an indication of relative size based on income and how many segments each business has, although it should be noted that more business segments doesn't always equal a bigger company.  
+
+
+We also need to examine client size between big4 and non-big4.  We can use several different of the variables listed, but let's go with pre-tax income (pi) as our indicator of client size, but we could also probably use a few others if we wanted to, like operating activities net cash flow (oancf)
+
+### Rename overlapping variables
+
+#### We'll add these to our fees dataframe in the next step, but it wouldn't work if they same the same variable names, which they currently do.
+```{r}
+otherFees <- rename(otherFees, 'otherGC' = going_concern, 'otherMS' = misstatement, 'otherBS' = busseg, 'otherPI' = pi, 'OtherOANCF' = oancf, 'otherMW' = matweak_original_am)
+```
+
+### Add non big 4(other) variables to fees
+```{r}
+fees$otherGC <- otherFees$otherGC
+fees$otherMS <- otherFees$otherMS
+fees$otherBS <- otherFees$otherBS
+fees$otherPI <- otherFees$otherPI
+fees$otherOANCF <- otherFees$OtherOANCF
+fees$B4ClientSize <- clients$B4Clients
+fees$NonB4ClientSize <- clients$OtherClients
+fees$otherMW <- otherFees$otherMW
+```
+
+
+#### New variable name for fees, just to clarify and simplify since things got messy and since we'll mess with this new df a little more
+
+```{r}
+ClientSize <- fees
+```
+
+## Client Size:
+
+### Pick out only what we need.
+
+### In determining client sizes, we want to look at three different things: pretax income, operating activities net cash flow, and # of business segments, with all of this separated by year, which means we'll need 7 variables.  Note "other" in front of a variable signifies a non big 4 firm.  So otherPI = non big 4 pre tax income, while pi = big 4 pretax income.  
+
+```{r}
+size <- ClientSize %>% select(calendar_year, pi, otherPI, oancf, otherOANCF, busseg, otherBS)
+size
+```
+
+### 2018 percent change just as a sample of how much bigger Big 4 public clients are
+```{r}
+size2018 <- size %>% filter(calendar_year == 2018)
+```
+
+### Pretax income
+```{r}
+(size2018$pi - size2018$otherPI) / size2018$otherPI * 100
+```
+
+#### OANCF
+```{r}
+(size2018$oancf - size2018$otherOANCF) / size2018$otherOANCF * 100
+
+```
+
+#### Business segments
+```{r}
+(size2018$busseg - size2018$otherBS) / size2018$otherBS * 100
+
+```
+
+
+
+### Summary:  Big 4 firms have substantially more business segments and higher pre-tax income and operating activities net cash flow when in comparison to their non big 4 counterparts.  This indicates that the companies Big 4 firms audit are much larger companies that the ones that non big 4 firms audit.  Big 4 audited companies have much higher numbers every year all across the border.  Some years, the non big 4 firms can't even stay positive in some cash flow areas and pretax income.
+
+
+### Create material weakness variable, and find the mat. weak % for B4 (Big4MW) and non b4(NonBig4MW).
+```{r}
+mw <- ClientSize %>% select(calendar_year, matweak_original_am, B4ClientSize, NonB4ClientSize, otherMW)
+mw <- mw %>% mutate(Big4MW = (matweak_original_am / B4ClientSize) * 100
+                      )
+
+mw <- mw %>% mutate(NonBig4MW = (otherMW / NonB4ClientSize) * 100
+                      )
+mw
+```
+
+#### Means
+
+```{r}
+mean(mw$Big4MW)
+```
+
+```{r}
+mean(mw$NonBig4MW)
+```
+
+
+### Summary:  Non big 4 firms had clients with an initial lower mat. weakness % than Big 4, but this percentage shot up by 10 percent in 2007, and this number has been mostly rising since then...  Non big 4 now generally have a much higher percentage of their clients having material weaknesses, hovering around 25% the last 4-5 years.  
+
+
+### Create going concern variable from ClientSize, and then mutate to create a big 4 going concern % (Big4GC) and a non big 4 going concern % (NonB4GC).
+```{r}
+gc <- ClientSize %>% select(calendar_year, going_concern, otherGC, B4ClientSize, NonB4ClientSize)
+gc <- gc %>% mutate(Big4GC = (going_concern / B4ClientSize) * 100)
+gc <- gc %>% mutate(NonB4GC = (NonB4GC = otherGC / NonB4ClientSize) * 100 )
+gc
+```
+
+#### Means
+```{r}
+mean(gc$Big4GC)
+```
+```{r}
+mean(gc$NonB4GC)
+```
+
+
+
+#### Summary:  Big 4 audits have much lower going_concern opinions across the border when in comparison to non big 4 audits.  This means that non Big 4 clients have much more financial instability and are more likely to go bankrupt.
+
+
+# End of Part 1
+
+# --------------------------------------------------------------------------------------
+
+# Part 2
+
+
+# 1
+
+
+### Material weakness by year
+
+#### the misstatement variable gives us the total misstatement in each year.
+
+```{r}
+misstatement <- aggregate(misstatement ~ calendar_year, df, sum, na.rm = TRUE)
+misstatement
+```
+
+### Get count of total number of audits in each year(length), this will be the denomiator in finding the misstatement rate.  The variable name is misstatement right now, but we'll change it in a few steps.  
+```{r}
+l <- aggregate(misstatement ~ calendar_year, df, length)
+```
+
+
+```{r}
+l
+```
+
+
+
+#### Add to misstatement df.  This also changes the name that we mentioned we would do in a few steps.  This code is saying "In the misstatement dataframe, go to the length variable, and make the length variable the misstatment variable in dataframe l".  Since length doesn't exist in the misstatement dataframe, it creates one, essentially just copying over the misstatment variable from the l dataframe.  
+```{r}
+misstatement$length <- l$misstatement
+```
+
+### Compute misstatement rate, which is just the actual misstatement divided by length (number of total audits in each year).  
+
+```{r}
+misstatement <- misstatement %>% mutate(MissRate = (misstatement / length) * 100
+)
+misstatement
+```
+
+### Summary:  Misstatement Rates have, for the most part, been falling each year, and have the general trend of having fewer and fewer misstatements every year since 2003.  
+
+
+# 2
+
+
+### Note that little r and big r just add up to the misstatement variable, so we'll just use the aggregated misstatement as we attempt to find the misstatment rate each year compared with big 4 and non b4 audits.  This is just the same as question 1, but with an additional separator between Big 4 and non big 4.
+
+#### Big4MS = Misstatement rate for Big 4 firms
+#### NonB4MS = MS rate for non big 4 firms.
+
+```{r}
+
+ms <- ClientSize %>% select(calendar_year, B4ClientSize, NonB4ClientSize, misstatement, otherMS)
+
+ms <- ms %>% mutate(Big4MS = (misstatement / B4ClientSize) * 100)
+ms <- ms %>% mutate(NonB4MS = (otherMS / NonB4ClientSize) * 100 )
+ms
+```
+
+#### Means of both big 4 and non big 4 misstatement rates
+```{r}
+mean(ms$Big4MS)
+```
+```{r}
+mean(ms$NonB4MS)
+```
+
+
+
+
+### Summary:  Misstatements for both types of firms have been falling for the most part since 2003.  Since about 2015, the misstatement rate has been about the same for both types of firms.  
+
+
+
+# 3
+
+
+### Now compare misstatement rates between those with and without material weaknesses.  
+
+#### Similar to what we've been doing, all we have to add is a separator for material weakness instead of Big 4 (like we did with year which we will still do).. We already did this in the last step
+
+```{r}
+weakness <- aggregate(misstatement ~ calendar_year + matweak_original_am, df, sum, na.rm = TRUE) #we're asking here for the sum of the misstatements, split by year and material weakness
+weakness
+```
+
+
+```{r}
+l1 <- aggregate(misstatement ~ calendar_year + matweak_original_am, df, FUN = length)
+```
+
+#### l1 shows us the amount of misstatement in each year, split up also by whether a material weakness exists (1) or does not exist (0).
+```{r}
+l1
+```
+
+### Similar process to what we did with overall misstatement, but now we have to separate each year into an additional category - material weakness.
+```{r}
+weakness$length <- l1$misstatement
+```
+
+
+### Calculate misstatement rate by year and by material weakness (1= MW is present)
+```{r}
+weakness <- weakness %>% mutate(MissRate = (misstatement/length) * 100
+                                  )
+```
+
+
+#### For clarity, no_weak is those WITHOUT a mat. weakness
+```{r}
+no_weak <- weakness %>% filter(matweak_original_am == 0)
+no_weak
+```
+
+#### And weak is for those WITH a mat.weakness
+```{r}
+weak <- weakness %>% filter(matweak_original_am == 1)
+weak
+```
+
+
+#### Means
+```{r}
+mean(no_weak$MissRate)
+```
+```{r}
+mean(weak$MissRate)
+```
+
+
+
+# End of Part 2
+
+# -------------------------------------------------------------------------------------
+
+
+# Part 3
+
+
+# 1
+
+In this one, we will need to find the most common reasons for internal control material weakness.  Specifically, there's keys (numbers) and phrases.  Doing a similar process like we've done all along, we're going to use a sum of the material weaknesses, and make our "splits" by calendar year, weakness key, and phrasing.  Note that we can have both the keys and phrases because they'll lead to the same split, provided there's no human error in the original data entry.  Note that in matweak 1 = material weakness was present.
+
+```{r}
+keys <- aggregate(matweak_original_am ~ calendar_year + noteff_other_reas_keys + noteff_other_reas_phr, df, sum, na.rm = TRUE)
+```
+
+
+### Arrange in descending order to see the most common reasons.  
+
+17 42 44 seems to be the most common reason for a material weakness, which is: 
+
+|IC - Accounting documentation, policy and/or procedures|IC - Segregations of duties/ design of controls (personnel)|IC - Accounting personnel resources, competency/training|
+
+```{r}
+keys %>% arrange(-matweak_original_am)
+```
+
+
+# End of Part 3
+
+# ----------------------------------------------------------------------------
+
+# End of analysis
